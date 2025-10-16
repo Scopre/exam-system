@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Computer-Based Exam System</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // ⚙️ CONFIGURATION - Replace with your Google Sheet URL
+        const GOOGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/13hUTPj_HVEsC-AFVhstqDrUBd8evhfU2gfoR0eRrRjs/edit?gid=0#gid=0';
+
+        const ExamSystem = () => {
+            const [stage, setStage] = useState('loading'); // loading, setup, exam, results
+            const [questions, setQuestions] = useState([]);
+            const [selectedQuestions, setSelectedQuestions] = useState([]);
+            const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+            const [studentName, setStudentName] = useState('');
+            const [numQuestions, setNumQuestions] = useState(10);
+            const [timeLimit, setTimeLimit] = useState(30);
+            const [timeRemaining, setTimeRemaining] = useState(0);
+            const [answers, setAnswers] = useState({});
+            const [score, setScore] = useState(null);
+            const [examStarted, setExamStarted] = useState(false);
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState(null);
+
+            // Load questions from Google Sheet on mount
+            useEffect(() => {
+                loadQuestionsFromSheet();
+            }, []);
+
+            const loadQuestionsFromSheet = async () => {
+                try {
+                    setLoading(true);
+                    setError(null);
+
+                    const response = await fetch(GOOGLE_SHEET_URL);
+                    if (!response.ok) {
+                        throw new Error('Failed to load questions. Please check the Google Sheet URL.');
+                    }
+
+                    const csvText = await response.text();
+                    const parsed = parseCSV(csvText);
+                    
+                    if (parsed.length === 0) {
+                        throw new Error('No questions found in the sheet.');
+                    }
+
+                    setQuestions(parsed);
+                    setStage('setup');
+                } catch (err) {
+                    setError(err.message);
+                    setStage('error');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const parseCSV = (csv) => {
+                const lines = csv.split('\n').map(line => line.trim()).filter(line => line);
+                const parsed = [];
+
+                // Skip header row
+                for (let i = 1; i < lines.length; i++) {
+                    const parts = lines[i].split(',').map(p => p.trim().replace(/^"|"$/g, ''));
+                    
+                    if (parts.length < 2) continue;
+
+                    const type = parts[0].toLowerCase();
+                    const questionText = parts[1];
+
+                    if (type === 'mcq' && parts.length >= 7) {
+                        parsed.push({
+                            type: 'mcq',
+                            question: questionText,
+                            options: [
+                                { letter: 'A', text: parts[2] },
+                                { letter: 'B', text: parts[3] },
+                                { letter: 'C', text: parts[4] },
+                                { letter: 'D', text: parts[5] }
+                            ],
+                            correctAnswer: parts[6].toUpperCase()
+                        });
+                    } else if (type === 'fill' && parts.length >= 3) {
+                        parsed.push({
+                            type: 'fill',
+                            question: questionText,
+                            correctAnswer: parts[2]
+                        });
+                    }
+                }
+
+                return parsed;
+            };
+
+            useEffect(() => {
+                if (examStarted && timeRemaining > 0) {
+                    const timer = setInterval(() => {
+                        setTimeRemaining(prev => {
+                            if (prev <= 1) {
+                                handleSubmit();
+                                return 0;
+                            }
+                            return prev - 1;
+                        });
+                    }, 1000);
+                    return () => clearInterval(timer);
+                }
+            }, [examStarted, timeRemaining]);
+
+            const selectRandomQuestions = (allQuestions, count) => {
+                const mcqs = allQuestions.filter(q => q.type === 'mcq');
+                const fills = allQuestions.filter(q => q.type === 'fill');
+                
+                const mcqCount = Math.floor(count * 0.7);
+                const fillCount = count - mcqCount;
+                
+                const selectedMcqs = mcqs.sort(() => Math.random() - 0.5).slice(0, Math.min(mcqCount, mcqs.length));
+                const selectedFills = fills.sort(() => Math.random() - 0.5).slice(0, Math.min(fillCount, fills.length));
+                
+                return [...selectedMcqs, ...selectedFills].sort(() => Math.random() - 0.5);
+            };
+
+            const startExam = () => {
+                if (!studentName.trim()) {
+                    alert('Please enter your name');
+                    return;
+                }
+
+                const selected = selectRandomQuestions(questions, Math.min(numQuestions, questions.length));
+                setSelectedQuestions(selected);
+                setTimeRemaining(timeLimit * 60);
+                setAnswers({});
+                setCurrentQuestionIndex(0);
+                setStage('exam');
+                setExamStarted(true);
+            };
+
+            const handleAnswer = (answer) => {
+                setAnswers(prev => ({
+                    ...prev,
+                    [currentQuestionIndex]: answer
+                }));
+            };
+
+            const goToNext = () => {
+                if (currentQuestionIndex < selectedQuestions.length - 1) {
+                    setCurrentQuestionIndex(prev => prev + 1);
+                }
+            };
+
+            const goToPrevious = () => {
+                if (currentQuestionIndex > 0) {
+                    setCurrentQuestionIndex(prev => prev - 1);
+                }
+            };
+
+            const handleSubmit = () => {
+                setExamStarted(false);
+                let correct = 0;
+
+                selectedQuestions.forEach((q, idx) => {
+                    const studentAnswer = answers[idx];
+                    if (!studentAnswer) return;
+
+                    if (q.type === 'mcq') {
+                        if (studentAnswer === q.correctAnswer) correct++;
+                    } else if (q.type === 'fill') {
+                        if (studentAnswer.toLowerCase().trim() === q.correctAnswer.toLowerCase().trim()) {
+                            correct++;
+                        }
+                    }
+                });
+
+                setScore({
+                    correct,
+                    total: selectedQuestions.length,
+                    percentage: ((correct / selectedQuestions.length) * 100).toFixed(1)
+                });
+                setStage('results');
+            };
+
+            const formatTime = (seconds) => {
+                const mins = Math.floor(seconds / 60);
+                const secs = seconds % 60;
+                return `${mins}:${secs.toString().padStart(2, '0')}`;
+            };
+
+            if (stage === 'loading') {
+                return (
+                    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-8">
+                        <div className="bg-white rounded-lg shadow-xl p-8 text-center">
+                            <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-indigo-600 mx-auto mb-4"></div>
+                            <h2 className="text-xl font-semibold text-gray-800">Loading Exam...</h2>
+                            <p className="text-gray-600 mt-2">Please wait while we fetch the questions</p>
+                        </div>
+                    </div>
+                );
+            }
+
+            if (stage === 'error') {
+                return (
+                    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-8">
+                        <div className="bg-white rounded-lg shadow-xl p-8 max-w-2xl">
+                            <div className="text-center mb-6">
+                                <svg className="mx-auto mb-4 text-red-500" width="64" height="64" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                                </svg>
+                                <h2 className="text-2xl font-bold text-gray-800 mb-2">Error Loading Exam</h2>
+                                <p className="text-red-600 mb-4">{error}</p>
+                            </div>
+                            
+                            <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-4">
+                                <p className="text-sm text-yellow-700">
+                                    <strong>For Tutors:</strong> Make sure you've replaced the Google Sheet URL in the code and published the sheet to the web.
+                                </p>
+                            </div>
+
+                            <button
+                                onClick={loadQuestionsFromSheet}
+                                className="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition-colors"
+                            >
+                                Try Again
+                            </button>
+                        </div>
+                    </div>
+                );
+            }
+
+            if (stage === 'setup') {
+                return (
+                    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8">
+                        <div className="max-w-2xl mx-auto">
+                            <div className="bg-white rounded-lg shadow-xl p-8">
+                                <h2 className="text-2xl font-bold text-gray-800 mb-6">Exam Setup</h2>
+                                
+                                <div className="mb-6 p-4 bg-green-50 rounded-lg">
+                                    <p className="text-green-800">
+                                        ✓ Successfully loaded <strong>{questions.length}</strong> questions
+                                    </p>
+                                    <p className="text-sm text-green-700 mt-1">
+                                        MCQs: {questions.filter(q => q.type === 'mcq').length} | 
+                                        Fill-in-the-blanks: {questions.filter(q => q.type === 'fill').length}
+                                    </p>
+                                </div>
+
+                                <div className="space-y-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                                            Student Name
+                                        </label>
+                                        <input
+                                            type="text"
+                                            value={studentName}
+                                            onChange={(e) => setStudentName(e.target.value)}
+                                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                                            placeholder="Enter your name"
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                                            Number of Questions (max {questions.length})
+                                        </label>
+                                        <input
+                                            type="number"
+                                            value={numQuestions}
+                                            onChange={(e) => setNumQuestions(Math.min(parseInt(e.target.value) || 0, questions.length))}
+                                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                                            min="1"
+                                            max={questions.length}
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                                            Time Limit (minutes)
+                                        </label>
+                                        <input
+                                            type="number"
+                                            value={timeLimit}
+                                            onChange={(e) => setTimeLimit(parseInt(e.target.value) || 0)}
+                                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                                            min="1"
+                                        />
+                                    </div>
+                                </div>
+
+                                <button
+                                    onClick={startExam}
+                                    className="w-full mt-6 bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition-colors"
+                                >
+                                    Start Exam
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            if (stage === 'exam' && selectedQuestions.length > 0) {
+                const currentQ = selectedQuestions[currentQuestionIndex];
+                const currentAnswer = answers[currentQuestionIndex] || '';
+
+                return (
+                    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8">
+                        <div className="max-w-4xl mx-auto">
+                            <div className="bg-white rounded-lg shadow-xl p-6 mb-6">
+                                <div className="flex justify-between items-center">
+                                    <div>
+                                        <h3 className="text-xl font-bold text-gray-800">{studentName}</h3>
+                                        <p className="text-sm text-gray-600">
+                                            Question {currentQuestionIndex + 1} of {selectedQuestions.length}
+                                        </p>
+                                    </div>
+                                    <div className="flex items-center gap-2 text-lg font-semibold">
+                                        <svg className={timeRemaining < 300 ? 'text-red-500' : 'text-indigo-600'} width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <circle cx="12" cy="12" r="10"></circle>
+                                            <polyline points="12 6 12 12 16 14"></polyline>
+                                        </svg>
+                                        <span className={timeRemaining < 300 ? 'text-red-500' : 'text-indigo-600'}>
+                                            {formatTime(timeRemaining)}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="bg-white rounded-lg shadow-xl p-8 mb-6">
+                                <div className="mb-6">
+                                    <span className="inline-block px-3 py-1 bg-indigo-100 text-indigo-700 rounded-full text-sm font-semibold mb-4">
+                                        {currentQ.type === 'mcq' ? 'Multiple Choice' : 'Fill in the Blank'}
+                                    </span>
+                                    <h2 className="text-xl font-semibold text-gray-800">{currentQ.question}</h2>
+                                </div>
+
+                                {currentQ.type === 'mcq' ? (
+                                    <div className="space-y-3">
+                                        {currentQ.options.map((option) => (
+                                            <button
+                                                key={option.letter}
+                                                onClick={() => handleAnswer(option.letter)}
+                                                className={`w-full text-left p-4 rounded-lg border-2 transition-all ${
+                                                    currentAnswer === option.letter
+                                                        ? 'border-indigo-600 bg-indigo-50'
+                                                        : 'border-gray-200 hover:border-indigo-300'
+                                                }`}
+                                            >
+                                                <span className="font-semibold text-indigo-600">{option.letter})</span> {option.text}
+                                            </button>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <input
+                                        type="text"
+                                        value={currentAnswer}
+                                        onChange={(e) => handleAnswer(e.target.value)}
+                                        className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                                        placeholder="Type your answer here..."
+                                    />
+                                )}
+                            </div>
+
+                            <div className="bg-white rounded-lg shadow-xl p-6">
+                                <div className="flex justify-between items-center">
+                                    <button
+                                        onClick={goToPrevious}
+                                        disabled={currentQuestionIndex === 0}
+                                        className="px-6 py-2 bg-gray-200 text-gray-700 rounded-lg font-semibold hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                    >
+                                        Previous
+                                    </button>
+
+                                    <div className="flex gap-1">
+                                        {selectedQuestions.map((_, idx) => (
+                                            <div
+                                                key={idx}
+                                                className={`w-3 h-3 rounded-full ${
+                                                    answers[idx] ? 'bg-green-500' : 'bg-gray-300'
+                                                }`}
+                                            />
+                                        ))}
+                                    </div>
+
+                                    {currentQuestionIndex === selectedQuestions.length - 1 ? (
+                                        <button
+                                            onClick={handleSubmit}
+                                            className="px-6 py-2 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition-colors"
+                                        >
+                                            Submit Exam
+                                        </button>
+                                    ) : (
+                                        <button
+                                            onClick={goToNext}
+                                            className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 transition-colors"
+                                        >
+                                            Next
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            if (stage === 'results' && score) {
+                return (
+                    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8">
+                        <div className="max-w-3xl mx-auto">
+                            <div className="bg-white rounded-lg shadow-xl p-8">
+                                <div className="text-center mb-8">
+                                    <svg className={`mx-auto mb-4 ${score.percentage >= 70 ? 'text-green-500' : 'text-orange-500'}`} width="64" height="64" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        {score.percentage >= 70 ? (
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                        ) : (
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                                        )}
+                                    </svg>
+                                    <h2 className="text-3xl font-bold text-gray-800 mb-2">Exam Completed!</h2>
+                                    <p className="text-gray-600">{studentName}</p>
+                                </div>
+
+                                <div className="bg-gradient-to-r from-indigo-500 to-purple-600 rounded-lg p-8 text-white mb-6">
+                                    <div className="text-center">
+                                        <p className="text-lg mb-2">Your Score</p>
+                                        <p className="text-5xl font-bold mb-2">{score.percentage}%</p>
+                                        <p className="text-lg">
+                                            {score.correct} out of {score.total} correct
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-4 max-h-96 overflow-y-auto">
+                                    {selectedQuestions.map((q, idx) => {
+                                        const studentAnswer = answers[idx];
+                                        const isCorrect = q.type === 'mcq' 
+                                            ? studentAnswer === q.correctAnswer
+                                            : studentAnswer?.toLowerCase().trim() === q.correctAnswer.toLowerCase().trim();
+
+                                        return (
+                                            <div key={idx} className={`p-4 rounded-lg border-2 ${isCorrect ? 'border-green-300 bg-green-50' : 'border-red-300 bg-red-50'}`}>
+                                                <div className="flex items-start gap-3">
+                                                    <span className={`flex-shrink-0 font-semibold ${isCorrect ? 'text-green-600' : 'text-red-600'}`}>
+                                                        {idx + 1}.
+                                                    </span>
+                                                    <div className="flex-grow">
+                                                        <p className="font-medium text-gray-800 mb-2">{q.question}</p>
+                                                        <div className="text-sm space-y-1">
+                                                            <p>
+                                                                <span className="font-semibold">Your answer:</span>{' '}
+                                                                <span className={isCorrect ? 'text-green-700' : 'text-red-700'}>
+                                                                    {studentAnswer || '(Not answered)'}
+                                                                </span>
+                                                            </p>
+                                                            {!isCorrect && (
+                                                                <p>
+                                                                    <span className="font-semibold">Correct answer:</span>{' '}
+                                                                    <span className="text-green-700">{q.correctAnswer}</span>
+                                                                </p>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                    <svg className={`flex-shrink-0 ${isCorrect ? 'text-green-500' : 'text-red-500'}`} width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        {isCorrect ? (
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                                        ) : (
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                                                        )}
+                                                    </svg>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+
+                                <button
+                                    onClick={() => {
+                                        setStage('setup');
+                                        setScore(null);
+                                        setAnswers({});
+                                        setCurrentQuestionIndex(0);
+                                    }}
+                                    className="w-full mt-6 bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition-colors"
+                                >
+                                    Take Another Exam
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            return null;
+        };
+
+        ReactDOM.render(<ExamSystem />, document.getElementById('root'));
+    </script>
+</body>
+</html>
